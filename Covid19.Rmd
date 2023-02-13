@@ -1,0 +1,570 @@
+```{r,echo=FALSE}
+xWide = read.table('/Users/sunxiaotan/Desktop/STA442 HW3/WeeklyDeaths_QC_2010-2020_AgeGr.csv',sep = ";", skip = 7, col.names = c("year", "junk","age", paste0("w", 1:53)))
+xWide = xWide[grep("^[[:digit:]]+$", xWide$year), ]
+x = reshape2::melt(xWide, id.vars = c("year", "age"),measure.vars = grep("^w[[:digit:]]+$", colnames(xWide)))
+x$dead = as.numeric(gsub("[[:space:]]", "", x$value))
+x$week = as.numeric(gsub("w", "", x$variable))
+x = x[order(x$year, x$week, x$age), ]
+newYearsDay = as.Date(ISOdate(x$year, 1, 1))
+x$time = newYearsDay + 7 * (x$week - 1)
+x = x[!is.na(x$dead), ]
+x = x[x$week < 53, ]
+```
+
+# Model:
+The model we are using is a generalized additive model. GAM is appropriate for our data as it fits the wiggly term for time.
+Response variable follows poisson distribution as the death count is positive discrete data.
+$$Y_i\sim Poisson(\lambda_i)$$
+$$log(\lambda_i)=X_t\beta+f(t_i;s)+V_i$$
+f() is a smoothly-varying function with 's' as the smoothing parameter.
+
+$$[f_1...f_T]^T\sim RW2(0,\sigma_f^2)$$
+f follows second order random walk which marks the seasonally adjusted trend. Seasonal adjustment is essential when we want to analyze the long-term trend.
+
+$$V_i\sim N(0,\sigma_v^2)$$
+V covers independent variation or over-dispersion.
+
+Covariates for the fixed effect include one intercept and seasonal effect. Four sinusoidal basis functions are used to capture the seasonal effect, including 12 month cycles and 6 months cycles.
+$$X_{i0}=1 \\ X_{i1}=cos(2\pi t_i/365.25) \\ X_{i2}=sin(2\pi t_i/365.25) \\ X_{i3}=cos(2\pi t_i/182.625) \\ X_{i4}=sin(2\pi t_i/182.625)$$
+
+# Priors for independent variation:
+Select PC priors for sigma_v. Want the standard deviation in V to be close to zero, therefore the value of hyper-parameters are selected base on the belief that $$P(\sigma_v>log(1.2))=0.5$$
+Interpretation: the median of standard deviation in independent variation is log(1.2).
+
+# Priors for RW:
+PC prior is chosen for RW based on the belief that $$P(\sigma_f>0.01)=0.5$$
+Interpretation: slope of log rate changes by 0.01 from one year to the next.
+
+# Priors for fixed effect:
+The prior for fixed effect is chosen by default(Gaussian).
+
+# For over 70's:
+
+```{r,echo=FALSE}
+plot(x[x$age == "70 years old and over", c("time", "dead")], type = "o",log = "y",xlim = c(as.Date('2018-01-01'),as.Date('2020-10-07')),ylab='death count',main='Death counts for the over 70s in the past three years')
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+abline(v=as.Date('2019-03-01'),col='red',lty=2)
+abline(v=as.Date('2019-06-01'),col='red',lty=2)
+abline(v=as.Date('2018-03-01'),col='red',lty=2)
+abline(v=as.Date('2018-06-01'),col='red',lty=2)
+abline(v=as.Date('2020-09-01'),col='blue',lty=2)
+abline(v=as.Date('2020-10-01'),col='blue',lty=2)
+abline(v=as.Date('2019-09-01'),col='blue',lty=2)
+abline(v=as.Date('2019-10-01'),col='blue',lty=2)
+abline(v=as.Date('2018-09-01'),col='blue',lty=2)
+abline(v=as.Date('2018-10-01'),col='blue',lty=2)
+```
+
+The graph compares the death counts of over 70's in the past three years. The intervals bounded by red dashed lines represent March, April, May for 2018, 2019 and 2020. The intervals bounded by blue dashed lines represent September 2018, 2019 and 2020. 
+
+The 3 year's trends of death in September and the average of death are similar over these years. The seasonal trend of death in September are not significantly changed throughout the recent three years. The average death is approximately constant which is not surprising as the output of seasonally adjusted random effect evidenced this constant long-term trend. Thus the second wave of COVID-19 did not have a significant impact on over 70's.
+
+For March, April, May 2018 and 2019, there was a decreasing trend over the three months' period. For both years, the average of death was between 800-1200. For March, April, May 2020, there was a sharp increasing trend over the three month's periods and the average of death is between 1200-1600. Since the first wave of COVID-19 epidemic changed the regular seasonal trend of death and elevated average death, it suggests that the first wave of COVID-19 epidemic affected the elderly who are over 70.
+
+
+```{r,echo=FALSE}
+xWide2 = reshape2::dcast(x, week + age ~ year, value.var = "dead")
+Syear = grep("[[:digit:]]", colnames(xWide2), value = TRUE)
+Scol = RColorBrewer::brewer.pal(length(Syear), "Spectral")
+matplot(xWide2[xWide2$age == "70 years old and over", Syear], type = "l",lty = 1, col = Scol,xlab = 'week',ylab = 'death counts',main='Death counts for the over 70s in the past 10 years')
+legend("topright", col = Scol, legend = Syear, bty = "n",lty = 1, lwd = 3)
+abline(v='10',col='red',lty=2)
+abline(v='22',col='red',lty=2)
+abline(v='36',col='blue',lty=2)
+abline(v='40',col='blue',lty=2)
+```
+
+The area bounded by red dashed lines indicates March, April and May for each years (week 10 to week 22). The area bounded by blue dashed lines indicates September for each years (week 36 to week 40). This graph shows similar trends of death for over 70's in September periods but there was an abnormal peak of death in March, April and May 2020 comparing to the same periods of previous 10 years. 
+
+```{r,echo=FALSE}
+#Model
+dateCutoff = as.Date("2020/3/1")
+xPreCovid = x[x$time < dateCutoff, ]
+xPostCovid = x[x$time >= dateCutoff, ]
+toForecast = expand.grid(age = unique(x$age), time = unique(xPostCovid$time),dead = NA)
+xForInla = rbind(xPreCovid[, colnames(toForecast)],toForecast)
+xForInla = xForInla[order(xForInla$time, xForInla$age),]
+
+xForInla$timeNumeric = as.numeric(xForInla$time)
+xForInla$timeForInla = (xForInla$timeNumeric - as.numeric(as.Date("2015/1/1")))/365.25
+xForInla$timeIid = xForInla$timeNumeric
+xForInla$sin12 = sin(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$sin6 = sin(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInla$cos12 = cos(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$cos6 = cos(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInlaTotal= xForInla[xForInla$age == '70 years old and over', ]
+library(INLA)
+res = inla(dead ~ sin12 + sin6 + cos12 + cos6 +
+    f(timeIid, prior='pc.prec', param= c(log(1.2), 0.5)) +
+    f(timeForInla, model = 'rw2', prior='pc.prec', param= c(0.01, 0.5)),
+  data=xForInlaTotal,
+  control.predictor = list(compute=TRUE, link=1),
+  control.compute = list(config=TRUE),
+family='poisson')
+qCols = paste0(c(0.5, 0.025, 0.975), "quant")
+rbind(res$summary.fixed[, qCols], Pmisc::priorPostSd(res)$summary[,qCols])
+
+#Predicted intensity
+matplot(xForInlaTotal$time, res$summary.fitted.values[,qCols], type = "l", lty = c(1,2, 2), col = "black", log = "y",xlab = 'time',ylab='death counts',main = 'posterior median with 95% credible interval')
+points(x[x$age == "70 years old and over", c("time", "dead")], cex = 0.4,col = "red")
+abline(v=as.Date('2020-03-01'),col='blue',lty=2)
+abline(v=as.Date('2020-06-01'),col='blue',lty=2)
+```
+
+The table shows the output from INLA which includes the posterior distributions for fixed effect and random effect. For each effect, it shows posterior median and 95% credible interval.
+
+For the second graph, the black line is our predicted value, which is the median of our posterior distribution, and the black dotted lines indicate the 95% credible interval. The red dots are our actual death data for over 70's. We can see that our model matches the actual death data before the first wave of COVID-19 epidemic. However, by looking at the region bounded by blue dashed lines, the actual death data acquired during the first wave of COVID-19 epidemic clearly deviated from our model prediction since red dots generally lied outside credible interval. 
+
+```{r,echo=FALSE}
+set.seed(1)
+sampleList = INLA::inla.posterior.sample(30, res, selection = list(Predictor = 0))
+sampleIntensity = exp(do.call(cbind, Biobase::subListExtract(sampleList,"latent")))
+sampleDeaths = matrix(rpois(length(sampleIntensity),sampleIntensity), nrow(sampleIntensity), ncol(sampleIntensity))
+
+matplot(xForInlaTotal$time, sampleDeaths, col = "#00000010",lwd = 2, lty = 1, type = "l", log = "y", xlim = as.Date(c("2019/06/01","2020/06/01")),xlab = 'time',ylab = 'death counts',main='30 posterior samples with the actual data')
+points(x[x$age == "70 years old and over", c("time", "dead")], col = "red",cex = 0.5)
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+```
+
+30 posterior samples are selected based on our estimate of posterior distribution. This graph shows how our actual death data for over 70's deviates from our prediction during first wave of COVID-19 epidemic. There's an abnormal sharp rise of death record during these three months.
+
+```{r,echo=FALSE}
+xPostCovidTotal = xPostCovid[xPostCovid$age == "70 years old and over",]
+xPostCovidForecast = sampleDeaths[match(xPostCovidTotal$time,xForInlaTotal$time), ]
+excessDeaths = xPostCovidTotal$dead - xPostCovidForecast
+matplot(xPostCovidTotal$time, excessDeaths, type = "l",lty = 1, col = "#00000030",ylab = 'excess death',xlab='time', main='Excess death of over 70s')
+```
+
+Excess death are calculated as the difference between actual death counts and the death predicted by posterior median. 
+
+According to the graph, there was an uprise of excess death during the first wave of COVID-19 epidemic for over 70's. This implies a significant deviation from our model prediction. As our model prediction is built upon the previous death data (expected death under normal conditions), this uprise is abnormal and thus evidenced our hypothesis.
+For the second wave of COVID-19 epidemic started in September, the excess death dropped from the first wave. Although it was not zero, the excess death was not large enough to be significant. This implies the over 70's have no more deaths than would be expected pre-covid during the second wave of epidemic.
+
+```{r,echo=FALSE}
+# First wave over 70's
+excessDeathsSub1 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/03/01") & xPostCovidTotal$time <
+  as.Date("2020/06/01"), ]
+excessDeathsInPeriod1 = apply(excessDeathsSub1, 2, sum)
+round(quantile(excessDeathsInPeriod1))
+# Second wave over 70's
+excessDeathsSub2 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/09/01") & xPostCovidTotal$time <
+  as.Date("2020/10/07"), ]
+excessDeathsInPeriod2 = apply(excessDeathsSub2, 2, sum)
+round(quantile(excessDeathsInPeriod2))
+# Most recent
+round(quantile(excessDeaths[nrow(excessDeaths), ]))
+```
+
+The first table shows the quantiles of the accumulated excess death throughout the first wave of epidemic for the 30 posterior samples.
+The second table shows the quantiles of the accumulated excess death throughout the second wave of epidemic for the 30 posterior samples.
+The third table shows the quantiles of the most recent excess death data.
+By comparing the first wave with the most recent data, the quantiles of the excess death in first wave were significantly greater than the most recent ones. This indicates the over 70's had more deaths during the first wave than would be expected.
+By comparing the second wave with the most recent data, the quantiles of the excess death in second wave overlapped with the most recent ones. This indicates the over 70's didn't have more deaths during the second wave than would be expected.
+
+# For under 50's:
+
+```{r,echo=FALSE}
+plot(x[x$age == "0-49 years old", c("time", "dead")], type = "o",log = "y",xlim = c(as.Date('2018-01-01'),as.Date('2020-10-07')),ylab='death count',main='Death counts for the under 50s in the past three years')
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+abline(v=as.Date('2019-03-01'),col='red',lty=2)
+abline(v=as.Date('2019-06-01'),col='red',lty=2)
+abline(v=as.Date('2018-03-01'),col='red',lty=2)
+abline(v=as.Date('2018-06-01'),col='red',lty=2)
+abline(v=as.Date('2020-09-01'),col='blue',lty=2)
+abline(v=as.Date('2020-10-01'),col='blue',lty=2)
+abline(v=as.Date('2019-09-01'),col='blue',lty=2)
+abline(v=as.Date('2019-10-01'),col='blue',lty=2)
+abline(v=as.Date('2018-09-01'),col='blue',lty=2)
+abline(v=as.Date('2018-10-01'),col='blue',lty=2)
+```
+
+The graph compares the death counts of under 50's in the past three years. The intervals bounded by red dashed lines represent March, April, May for 2018, 2019 and 2020. The intervals bounded by blue dashed lines represent September 2018, 2019 and 2020.  
+
+The 3 year's trends of death in March, April and May are similar despite the increase in average death counts over these years. The seasonal trend are not significantly changed throughout the recent three years. Thus the first wave of COVID-19 doesn't seem to have a significant impact on under 50's.
+
+For September 2018 and 2019, there was an increasing trend over the period but such increasing trend was not monotone as we can see there were peaks and valleys. For 2018, the average of death in September was between 40-80. For 2019, the average of death in September was between 30-80. For September 2020, there was a sharply monotone increase over the period and the average of death is between 40-80. Although the second wave of COVID-19 epidemic did not significantly change the average death, it changed the regular seasonal trend of death from increasing with ups and downs to monotone increase. This suggests that the second wave of COVID-19 epidemic was primarily caused by the irresponsible under 50's.
+
+```{r,echo=FALSE}
+xWide2 = reshape2::dcast(x, week + age ~ year, value.var = "dead")
+Syear = grep("[[:digit:]]", colnames(xWide2), value = TRUE)
+Scol = RColorBrewer::brewer.pal(length(Syear), "Spectral")
+matplot(xWide2[xWide2$age == "0-49 years old", Syear], type = "l",lty = 1, col = Scol,ylab = 'death counts',xlab='week',main='Death counts for the under 50s in the past 10 years')
+legend("topright", col = Scol, legend = Syear, bty = "n",lty = 1, lwd = 3)
+abline(v='10',col='red',lty=2)
+abline(v='22',col='red',lty=2)
+abline(v='36',col='blue',lty=2)
+abline(v='40',col='blue',lty=2)
+```
+
+The area bounded by red dashed lines indicates March, April and May for each years (week 10 to week 22). The area bounded by blue dashed lines indicates September for each years (week 36 to week 40). This graph shows similar trends of death for under 50's in either the March, April and May periods or the September periods for the previous ten years. 
+
+```{r,echo=FALSE}
+#Model
+dateCutoff = as.Date("2020/3/1")
+xPreCovid = x[x$time < dateCutoff, ]
+xPostCovid = x[x$time >= dateCutoff, ]
+toForecast = expand.grid(age = unique(x$age), time = unique(xPostCovid$time),dead = NA)
+xForInla = rbind(xPreCovid[, colnames(toForecast)],toForecast)
+xForInla = xForInla[order(xForInla$time, xForInla$age),]
+
+xForInla$timeNumeric = as.numeric(xForInla$time)
+xForInla$timeForInla = (xForInla$timeNumeric - as.numeric(as.Date("2015/1/1")))/365.25
+xForInla$timeIid = xForInla$timeNumeric
+xForInla$sin12 = sin(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$sin6 = sin(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInla$cos12 = cos(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$cos6 = cos(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInlaTotal= xForInla[xForInla$age == '0-49 years old', ]
+library(INLA)
+res = inla(dead ~ sin12 + sin6 + cos12 + cos6 +
+    f(timeIid, prior='pc.prec', param= c(log(1.2), 0.5)) +
+    f(timeForInla, model = 'rw2', prior='pc.prec', param= c(0.01, 0.5)),
+  data=xForInlaTotal,
+  control.predictor = list(compute=TRUE, link=1),
+  control.compute = list(config=TRUE),
+family='poisson')
+qCols = paste0(c(0.5, 0.025, 0.975), "quant")
+rbind(res$summary.fixed[, qCols], Pmisc::priorPostSd(res)$summary[,qCols])
+
+#Predicted intensity
+matplot(xForInlaTotal$time, res$summary.fitted.values[,qCols], type = "l", lty = c(1,2, 2), col = "black", log = "y",xlab = 'time',ylab='death counts',main = 'posterior median with 95% credible interval')
+points(x[x$age == "0-49 years old", c("time", "dead")], cex = 0.4,col = "red")
+```
+
+The table shows the output from INLA which includes the posterior distributions for fixed effect and random effect. For each effect, it shows posterior median and 95% credible interval.
+
+For the second graph, the black line is our predicted value, which is the median of our posterior distribution, and the black dotted lines indicate the 95% credible interval. The red dots are our actual death data for under 50's. 
+
+```{r,echo=FALSE}
+set.seed(1)
+sampleList = INLA::inla.posterior.sample(30, res, selection = list(Predictor = 0))
+sampleIntensity = exp(do.call(cbind, Biobase::subListExtract(sampleList,"latent")))
+sampleDeaths = matrix(rpois(length(sampleIntensity),sampleIntensity), nrow(sampleIntensity), ncol(sampleIntensity))
+
+matplot(xForInlaTotal$time, sampleDeaths, col = "#00000010",lwd = 2, lty = 1, type = "l", log = "y", xlim = as.Date(c("2019/09/01","2020/10/07")),xlab = 'time',ylab = 'death counts',main='30 posterior samples with the actual data')
+points(x[x$age == "0-49 years old", c("time", "dead")], col = "red",cex = 0.5)
+abline(v=as.Date('2020-09-01'),col='red',lty=2)
+abline(v=as.Date('2020-10-07'),col='red',lty=2)
+```
+
+30 posterior samples are selected based on our estimate of posterior distribution. This graph shows how our actual death data for under 50's deviates from our prediction during second wave of COVID-19 epidemic. There's an abnormal sharp rise of death record during September 2020 marked by the interval bounded by red dashed lines.
+
+```{r,echo=FALSE}
+xPostCovidTotal = xPostCovid[xPostCovid$age == "0-49 years old",]
+xPostCovidForecast = sampleDeaths[match(xPostCovidTotal$time,xForInlaTotal$time), ]
+excessDeaths = xPostCovidTotal$dead - xPostCovidForecast
+matplot(xPostCovidTotal$time, excessDeaths, type = "l",lty = 1, col = "#00000030",ylab = 'excess death',xlab='time', main='Excess death of under 50s')
+```
+
+Excess death are calculated as the difference between actual death counts and the death predicted by posterior median. 
+
+According to the graph, there were only trivial deviations from actual data to our model prediction of excess death in the first wave and the second wave epidemic for under 50's. As our model prediction is built upon the previous death data (expected death under normal conditions), this suggests a high probablity that the under 50's have no more deaths than would be expected pre-covid during either the first or second wave of epidemic. At this point, we still need statistics to support this guess. 
+
+
+```{r,echo=FALSE}
+# First wave under 50's
+excessDeathsSub1 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/03/01") & xPostCovidTotal$time <
+  as.Date("2020/06/01"), ]
+excessDeathsInPeriod1 = apply(excessDeathsSub1, 2, sum)
+round(quantile(excessDeathsInPeriod1))
+# Second wave under 50's
+excessDeathsSub2 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/09/01") & xPostCovidTotal$time <
+  as.Date("2020/10/07"), ]
+excessDeathsInPeriod2 = apply(excessDeathsSub2, 2, sum)
+round(quantile(excessDeathsInPeriod2))
+# Most recent
+round(quantile(excessDeaths[nrow(excessDeaths), ]))
+```
+
+The first table shows the quantiles of the accumulated excess death throughout the first wave of epidemic for the 30 posterior samples.
+The second table shows the quantiles of the accumulated excess death throughout the second wave of epidemic for the 30 posterior samples.
+The third table shows the quantiles of the most recent excess death data.
+By comparing the first wave with the most recent data, the quantiles of the excess death in first wave overlapped with the most recent ones. This indicates the under 50's didn't have more deaths during the first wave than would be expected.
+By comparing the second wave with the most recent data, the quantiles of the excess death in second wave were sightly greater than the most recent ones but the result is significant as the range did not overlap with each other. This indicates the under 50's had more deaths during the second wave than would be expected.
+
+# Conclusion:
+As a conclusion, both hypothesis are examined to be correct.
+The first wave of the COVID-19 epidemic, in March, April and May, primarily affected the over 70's while the effect on under 50's was not significant. 
+The second wave, which began in September, primarily affected the under 50's while the effect on over 70's was not significant.
+
+## Appendix
+```{r}
+#Q1
+co2s = read.table('/Users/sunxiaotan/Desktop/STA442 HW3/daily_flask_co2_mlo.csv', header = FALSE, sep = ",",
+  skip = 69, stringsAsFactors = FALSE, col.names = c("day",
+    "time", "junk1", "junk2", "Nflasks", "quality",
+    "co2"))
+co2s$date = strptime(paste(co2s$day, co2s$time), format = "%Y-%m-%d %H:%M",tz = "UTC")
+co2s = co2s[co2s$quality == 0, ]
+plot(co2s$date, co2s$co2, log = "y", cex = 0.3, col = "#00000040",xlab = "time", ylab = "ppm")
+plot(co2s[co2s$date > ISOdate(2015, 3, 1, tz = "UTC"),c("date", "co2")], log = "y", type = "o", xlab = "time",ylab = "ppm", cex = 0.5)
+
+co2s$day = as.Date(co2s$date)
+toAdd = data.frame(day = seq(max(co2s$day) + 3, as.Date("2025/1/1"),by = "10 days"), co2 = NA)
+co2ext = rbind(co2s[, colnames(toAdd)], toAdd)
+timeOrigin = as.Date("2000/1/1")
+co2ext$timeInla = round(as.numeric(co2ext$day - timeOrigin)/365.25,2)
+co2ext$cos12 = cos(2 * pi * co2ext$timeInla)
+co2ext$sin12 = sin(2 * pi * co2ext$timeInla)
+co2ext$cos6 = cos(2 * 2 * pi * co2ext$timeInla)
+co2ext$sin6 = sin(2 * 2 * pi * co2ext$timeInla)
+
+library('INLA', verbose=FALSE)
+mm = get("inla.models", INLA:::inla.get.inlaEnv()) 
+if(class(mm) == 'function') mm = mm() 
+mm$latent$rw2$min.diff = NULL
+assign("inla.models", mm, INLA:::inla.get.inlaEnv())
+
+co2res = inla(co2 ~ sin12 + cos12 + sin6 + cos6 +f(timeInla, model = 'rw2',prior='pc.prec', param = c(0.1, 0.5)),
+data = co2ext, family='gamma',control.family = list(hyper=list(prec=list(prior='pc.prec', param=c(0.1, 0.5)))), control.inla = list(strategy='gaussian'),control.predictor = list(compute=TRUE, link=1),control.compute = list(config=TRUE),verbose=FALSE)
+qCols = c('0.5quant','0.025quant','0.975quant')
+Pmisc::priorPost(co2res)$summary[,qCols]
+
+sampleList = INLA::inla.posterior.sample(30, co2res,selection = list(timeInla = 0))
+sampleMean = do.call(cbind, Biobase::subListExtract(sampleList,"latent"))
+sampleDeriv = apply(sampleMean, 2, diff)/diff(co2res$summary.random$timeInla$ID)
+#Berlin wall
+#Prediction
+matplot(co2ext$day, co2res$summary.fitted.values[,qCols], type = "l", col = "black", lty = c(1,2,2), log = "y", xlab = "time", ylab = "ppm",xlim = c(as.Date('1988-11-09'), as.Date('1994-11-09')))
+abline(v=as.Date('1989-11-09'),col='red',lty=2)
+abline(v=as.Date('1992-11-09'),col='blue',lty=2)
+#Random effect
+Stime = timeOrigin + round(365.25 * co2res$summary.random$timeInla$ID)
+matplot(Stime, co2res$summary.random$timeInla[, qCols],type = "l", col = "black", lty = c(1, 2, 2), xlab = "time",
+ylab = "y",xlim = c(as.Date('1988-11-09'), as.Date('1994-11-09')))
+abline(v=as.Date('1989-11-09'),col='red',lty=2)
+abline(v=as.Date('1992-11-09'),col='blue',lty=2)
+#Derivative
+matplot(Stime[-1], sampleDeriv, type = "l", lty = 1,xaxs = "i", col = "#00000020", xlab = "time", ylab = "deriv",
+ylim = quantile(sampleDeriv, c(0.01, 0.995)),xlim = c(as.Date('1988-11-09'), as.Date('1994-11-09')))
+abline(v=as.Date('1989-11-09'),col='red',lty=2)
+abline(v=as.Date('1992-11-09'),col='blue',lty=2)
+#Derivative, detail
+forX = as.Date(c("1988/11/09", "1994/11/09"))
+forX = seq(forX[1], forX[2], by = "6 months")
+toPlot = which(Stime > min(forX) & Stime < max(forX))
+matplot(Stime[toPlot], sampleDeriv[toPlot, ], type = "l",lty = 1, lwd = 2, xaxs = "i", col = "#00000050",xlab = "time", ylab = "deriv", xaxt = "n", ylim = quantile(sampleDeriv[toPlot,], c(0.01, 0.995)))
+axis(1, as.numeric(forX), format(forX, "%b%Y"))
+abline(v=as.Date('1989-11-09'),col='red',lty=2)
+abline(v=as.Date('1992-11-09'),col='blue',lty=2)
+
+#Covid
+#Prediction
+matplot(co2ext$day, co2res$summary.fitted.values[,qCols], type = "l", col = "black", lty = c(1, 2,2), log = "y", xlab = "time", ylab = "ppm",xlim = c(as.Date('2019-02-01'),as.Date('2020-06-16')))
+abline(v=as.Date('2020-02-01'),col='red',lty=2)
+
+#Random effect
+Stime = timeOrigin + round(365.25 * co2res$summary.random$timeInla$ID)
+matplot(Stime, co2res$summary.random$timeInla[, qCols],type = "l", col = "black", lty = c(1, 2, 2), xlab = "time",
+ylab = "y",xlim = c(as.Date('2019-02-01'),as.Date('2020-06-16')))
+abline(v=as.Date('2020-02-01'),col='red',lty=2)
+
+#Derivative
+matplot(Stime[-1], sampleDeriv, type = "l", lty = 1,xaxs = "i", col = "#00000020", xlab = "time", ylab = "deriv",
+ylim = quantile(sampleDeriv, c(0.01, 0.995)),xlim = c(as.Date('2019-02-01'),as.Date('2020-06-16')))
+abline(v=as.Date('2020-02-01'),col='red',lty=2)
+
+#Derivative, detail
+forX = as.Date(c("2019/02/01", "2020/06/16"))
+forX = seq(forX[1], forX[2], by = "1 months")
+toPlot = which(Stime > min(forX) & Stime < max(forX))
+matplot(Stime[toPlot], sampleDeriv[toPlot, ], type = "l",lty = 1, lwd = 2, xaxs = "i", col = "#00000050",xlab = "time", ylab = "deriv", xaxt = "n", ylim = quantile(sampleDeriv[toPlot,], c(0.01, 0.995)))
+axis(1, as.numeric(forX), format(forX, "%b%Y"))
+abline(v=as.Date('2020-02-01'),col='red',lty=2)
+
+#Q2
+xWide = read.table('/Users/sunxiaotan/Desktop/STA442 HW3/WeeklyDeaths_QC_2010-2020_AgeGr.csv',sep = ";", skip = 7, col.names = c("year", "junk","age", paste0("w", 1:53)))
+xWide = xWide[grep("^[[:digit:]]+$", xWide$year), ]
+x = reshape2::melt(xWide, id.vars = c("year", "age"),measure.vars = grep("^w[[:digit:]]+$", colnames(xWide)))
+x$dead = as.numeric(gsub("[[:space:]]", "", x$value))
+x$week = as.numeric(gsub("w", "", x$variable))
+x = x[order(x$year, x$week, x$age), ]
+newYearsDay = as.Date(ISOdate(x$year, 1, 1))
+x$time = newYearsDay + 7 * (x$week - 1)
+x = x[!is.na(x$dead), ]
+x = x[x$week < 53, ]
+
+#Over 70's
+plot(x[x$age == "70 years old and over", c("time", "dead")], type = "o",log = "y",xlim = c(as.Date('2018-01-01'),as.Date('2020-10-07')),ylab='death count',main='Death counts for the over 70s in the past three years')
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+abline(v=as.Date('2019-03-01'),col='red',lty=2)
+abline(v=as.Date('2019-06-01'),col='red',lty=2)
+abline(v=as.Date('2018-03-01'),col='red',lty=2)
+abline(v=as.Date('2018-06-01'),col='red',lty=2)
+abline(v=as.Date('2020-09-01'),col='blue',lty=2)
+abline(v=as.Date('2020-10-01'),col='blue',lty=2)
+abline(v=as.Date('2019-09-01'),col='blue',lty=2)
+abline(v=as.Date('2019-10-01'),col='blue',lty=2)
+abline(v=as.Date('2018-09-01'),col='blue',lty=2)
+abline(v=as.Date('2018-10-01'),col='blue',lty=2)
+
+xWide2 = reshape2::dcast(x, week + age ~ year, value.var = "dead")
+Syear = grep("[[:digit:]]", colnames(xWide2), value = TRUE)
+Scol = RColorBrewer::brewer.pal(length(Syear), "Spectral")
+matplot(xWide2[xWide2$age == "70 years old and over", Syear], type = "l",lty = 1, col = Scol,xlab = 'week',ylab = 'death counts',main='Death counts for the over 70s in the past 10 years')
+legend("topright", col = Scol, legend = Syear, bty = "n",lty = 1, lwd = 3)
+abline(v='10',col='red',lty=2)
+abline(v='22',col='red',lty=2)
+abline(v='36',col='blue',lty=2)
+abline(v='40',col='blue',lty=2)
+
+#Model
+dateCutoff = as.Date("2020/3/1")
+xPreCovid = x[x$time < dateCutoff, ]
+xPostCovid = x[x$time >= dateCutoff, ]
+toForecast = expand.grid(age = unique(x$age), time = unique(xPostCovid$time),dead = NA)
+xForInla = rbind(xPreCovid[, colnames(toForecast)],toForecast)
+xForInla = xForInla[order(xForInla$time, xForInla$age),]
+
+xForInla$timeNumeric = as.numeric(xForInla$time)
+xForInla$timeForInla = (xForInla$timeNumeric - as.numeric(as.Date("2015/1/1")))/365.25
+xForInla$timeIid = xForInla$timeNumeric
+xForInla$sin12 = sin(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$sin6 = sin(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInla$cos12 = cos(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$cos6 = cos(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInlaTotal= xForInla[xForInla$age == '70 years old and over', ]
+library(INLA)
+res = inla(dead ~ sin12 + sin6 + cos12 + cos6 +
+    f(timeIid, prior='pc.prec', param= c(log(1.2), 0.5)) +
+    f(timeForInla, model = 'rw2', prior='pc.prec', param= c(0.01, 0.5)),
+  data=xForInlaTotal,
+  control.predictor = list(compute=TRUE, link=1),
+  control.compute = list(config=TRUE),
+family='poisson')
+qCols = paste0(c(0.5, 0.025, 0.975), "quant")
+rbind(res$summary.fixed[, qCols], Pmisc::priorPostSd(res)$summary[,qCols])
+
+#Predicted intensity
+matplot(xForInlaTotal$time, res$summary.fitted.values[,qCols], type = "l", lty = c(1,2, 2), col = "black", log = "y",xlab = 'time',ylab='death counts',main = 'posterior median with 95% credible interval')
+points(x[x$age == "70 years old and over", c("time", "dead")], cex = 0.4,col = "red")
+abline(v=as.Date('2020-03-01'),col='blue',lty=2)
+abline(v=as.Date('2020-06-01'),col='blue',lty=2)
+
+#Random effect
+matplot(xForInlaTotal$time, res$summary.random$timeForInla[,c("0.5quant", "0.975quant", "0.025quant")], type = "l",
+lty = c(1, 2, 2), col = "black",main='posterior distribution of random effect',xlab = 'time')
+
+set.seed(1)
+sampleList = INLA::inla.posterior.sample(30, res, selection = list(Predictor = 0))
+sampleIntensity = exp(do.call(cbind, Biobase::subListExtract(sampleList,"latent")))
+sampleDeaths = matrix(rpois(length(sampleIntensity),sampleIntensity), nrow(sampleIntensity), ncol(sampleIntensity))
+
+matplot(xForInlaTotal$time, sampleDeaths, col = "#00000010",lwd = 2, lty = 1, type = "l", log = "y", xlim = as.Date(c("2019/06/01","2020/06/01")),xlab = 'time',ylab = 'death counts',main='30 posterior samples with the actual data')
+points(x[x$age == "70 years old and over", c("time", "dead")], col = "red",cex = 0.5)
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+
+# First wave over 70's
+excessDeathsSub1 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/03/01") & xPostCovidTotal$time <
+  as.Date("2020/06/01"), ]
+excessDeathsInPeriod1 = apply(excessDeathsSub1, 2, sum)
+round(quantile(excessDeathsInPeriod1))
+# Second wave over 70's
+excessDeathsSub2 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/09/01") & xPostCovidTotal$time <
+  as.Date("2020/10/07"), ]
+excessDeathsInPeriod2 = apply(excessDeathsSub2, 2, sum)
+round(quantile(excessDeathsInPeriod2))
+# Most recent
+round(quantile(excessDeaths[nrow(excessDeaths), ]))
+
+#Under 50's
+plot(x[x$age == "0-49 years old", c("time", "dead")], type = "o",log = "y",xlim = c(as.Date('2018-01-01'),as.Date('2020-10-07')),ylab='death count',main='Death counts for the under 50s in the past three years')
+abline(v=as.Date('2020-03-01'),col='red',lty=2)
+abline(v=as.Date('2020-06-01'),col='red',lty=2)
+abline(v=as.Date('2019-03-01'),col='red',lty=2)
+abline(v=as.Date('2019-06-01'),col='red',lty=2)
+abline(v=as.Date('2018-03-01'),col='red',lty=2)
+abline(v=as.Date('2018-06-01'),col='red',lty=2)
+abline(v=as.Date('2020-09-01'),col='blue',lty=2)
+abline(v=as.Date('2020-10-01'),col='blue',lty=2)
+abline(v=as.Date('2019-09-01'),col='blue',lty=2)
+abline(v=as.Date('2019-10-01'),col='blue',lty=2)
+abline(v=as.Date('2018-09-01'),col='blue',lty=2)
+abline(v=as.Date('2018-10-01'),col='blue',lty=2)
+
+xWide2 = reshape2::dcast(x, week + age ~ year, value.var = "dead")
+Syear = grep("[[:digit:]]", colnames(xWide2), value = TRUE)
+Scol = RColorBrewer::brewer.pal(length(Syear), "Spectral")
+matplot(xWide2[xWide2$age == "0-49 years old", Syear], type = "l",lty = 1, col = Scol,ylab = 'death counts',xlab='week',main='Death counts for the under 50s in the past 10 years')
+legend("topright", col = Scol, legend = Syear, bty = "n",lty = 1, lwd = 3)
+abline(v='10',col='red',lty=2)
+abline(v='22',col='red',lty=2)
+abline(v='36',col='blue',lty=2)
+abline(v='40',col='blue',lty=2)
+
+#Model
+dateCutoff = as.Date("2020/3/1")
+xPreCovid = x[x$time < dateCutoff, ]
+xPostCovid = x[x$time >= dateCutoff, ]
+toForecast = expand.grid(age = unique(x$age), time = unique(xPostCovid$time),dead = NA)
+xForInla = rbind(xPreCovid[, colnames(toForecast)],toForecast)
+xForInla = xForInla[order(xForInla$time, xForInla$age),]
+
+xForInla$timeNumeric = as.numeric(xForInla$time)
+xForInla$timeForInla = (xForInla$timeNumeric - as.numeric(as.Date("2015/1/1")))/365.25
+xForInla$timeIid = xForInla$timeNumeric
+xForInla$sin12 = sin(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$sin6 = sin(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInla$cos12 = cos(2 * pi * xForInla$timeNumeric/365.25)
+xForInla$cos6 = cos(2 * pi * xForInla$timeNumeric *2/365.25)
+xForInlaTotal= xForInla[xForInla$age == '0-49 years old', ]
+library(INLA)
+res = inla(dead ~ sin12 + sin6 + cos12 + cos6 +
+    f(timeIid, prior='pc.prec', param= c(log(1.2), 0.5)) +
+    f(timeForInla, model = 'rw2', prior='pc.prec', param= c(0.01, 0.5)),
+  data=xForInlaTotal,
+  control.predictor = list(compute=TRUE, link=1),
+  control.compute = list(config=TRUE),
+family='poisson')
+qCols = paste0(c(0.5, 0.025, 0.975), "quant")
+rbind(res$summary.fixed[, qCols], Pmisc::priorPostSd(res)$summary[,qCols])
+
+#Predicted intensity
+matplot(xForInlaTotal$time, res$summary.fitted.values[,qCols], type = "l", lty = c(1,2, 2), col = "black", log = "y",xlab = 'time',ylab='death counts',main = 'posterior median with 95% credible interval')
+points(x[x$age == "0-49 years old", c("time", "dead")], cex = 0.4,col = "red")
+
+#Random effect
+matplot(xForInlaTotal$time, res$summary.random$timeForInla[,c("0.5quant", "0.975quant", "0.025quant")], type = "l",
+lty = c(1, 2, 2), col = "black",main='posterior distribution of random effect',xlab = 'time')
+
+set.seed(1)
+sampleList = INLA::inla.posterior.sample(30, res, selection = list(Predictor = 0))
+sampleIntensity = exp(do.call(cbind, Biobase::subListExtract(sampleList,"latent")))
+sampleDeaths = matrix(rpois(length(sampleIntensity),sampleIntensity), nrow(sampleIntensity), ncol(sampleIntensity))
+
+matplot(xForInlaTotal$time, sampleDeaths, col = "#00000010",lwd = 2, lty = 1, type = "l", log = "y", xlim = as.Date(c("2019/09/01","2020/10/07")),xlab = 'time',ylab = 'death counts',main='30 posterior samples with the actual data')
+points(x[x$age == "0-49 years old", c("time", "dead")], col = "red",cex = 0.5)
+abline(v=as.Date('2020-09-01'),col='red',lty=2)
+abline(v=as.Date('2020-10-07'),col='red',lty=2)
+
+xPostCovidTotal = xPostCovid[xPostCovid$age == "0-49 years old",]
+xPostCovidForecast = sampleDeaths[match(xPostCovidTotal$time,xForInlaTotal$time), ]
+excessDeaths = xPostCovidTotal$dead - xPostCovidForecast
+matplot(xPostCovidTotal$time, excessDeaths, type = "l",lty = 1, col = "#00000030",ylab = 'excess death',xlab='time', main='Excess death of under 50s')
+
+# First wave under 50's
+excessDeathsSub1 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/03/01") & xPostCovidTotal$time <
+  as.Date("2020/06/01"), ]
+excessDeathsInPeriod1 = apply(excessDeathsSub1, 2, sum)
+round(quantile(excessDeathsInPeriod1))
+# Second wave under 50's
+excessDeathsSub2 = excessDeaths[xPostCovidTotal$time >
+  as.Date("2020/09/01") & xPostCovidTotal$time <
+  as.Date("2020/10/07"), ]
+excessDeathsInPeriod2 = apply(excessDeathsSub2, 2, sum)
+round(quantile(excessDeathsInPeriod2))
+# Most recent
+round(quantile(excessDeaths[nrow(excessDeaths), ]))
+```
